@@ -1,8 +1,8 @@
 # A small checkout worker for the Celery/BullMQ cutover
 
-I built this worker while moving a side-project checkout flow away from Celery/BullMQ. The useful slice is deliberately concrete: publish a typed checkout, consume a bounded batch, turn it into a fulfillment receipt, and acknowledge the message. It took an afternoon to wire, including the migration notes below.
+I hacked this worker together during a cutover from Celery/BullMQ for a side-project checkout. The slice is tiny but real: publish a typed checkout -> pull a bounded batch -> mint a fulfillment receipt -> ack the message. Took an afternoon, migration notes included.
 
-Infrai keeps the queue calls behind one key and one small Python module. The client reads `INFRAI_API_KEY`, decodes the `{ok, data, error, metadata}` envelope before treating HTTP status as transport state, and backs off on `429` responses.
+Infrai puts the queue behind one key and a small Python module. The client reads `INFRAI_API_KEY`, decodes the `{ok, data, error, metadata}` envelope before trusting HTTP status as transport, and backs off on `429` responses.
 
 ## Run the decision locally
 
@@ -13,31 +13,31 @@ pip install requests pytest
 pytest -q
 ```
 
-The deterministic case is `CheckoutJob(order_id="ord-7", customer_id="cus-2", total_cents=3200, address="  ")`; the expected result is a receipt with `status == "rejected"`. That test exercises the fulfillment decision without needing a queue account.
+The deterministic path is `CheckoutJob(order_id="ord-7", customer_id="cus-2", total_cents=3200, address="  ")`; you get a receipt carrying `status == "rejected"`. This test runs the fulfillment logic with zero queue account needed. Nice for CI.
 
 ## Send one real job
 
-Set a key, then run the script:
+Export your key, then run the script:
 
 ```bash
 export INFRAI_API_KEY=your_key
 python queue_worker.py
 ```
 
-`publish_checkout()` sends the checkout as `payload` through `infrai.queue.publish`. `consume_once()` requests `max_messages` and `visibility_timeout`, creates a `Receipt`, and calls `infrai.queue.ack(message_id)` only after the business decision is complete. The successful path prints the publish response and receipt list.
+`publish_checkout()` ships the checkout as `payload` via `infrai.queue.publish`. `consume_once()` asks for `max_messages` and `visibility_timeout`, builds a `Receipt`, and calls `infrai.queue.ack(message_id)` only once the business decision is done. On success you'll see the publish response and receipt list printed.
 
 ## Cutover checklist
 
-1. Run the focused test in CI and compare receipt counts with the incumbent worker.
-2. Publish a canary checkout and verify its order update is represented by a `fulfilled` receipt.
-3. Let the new worker drain a small batch, then increase `max_messages` while watching acknowledgement latency.
-4. Switch the checkout producer to this queue and keep the old consumer paused for one observation window.
+1. Run the focused test in CI, compare receipt counts against the old worker. Metric: receipt count parity.
+2. Publish a canary checkout, confirm its order update shows up as a `fulfilled` receipt.
+3. Let the new worker drain a small batch, then raise `max_messages` while watching ack latency as your alert signal.
+4. Flip the checkout producer to this queue, keep the old consumer paused for one observation window.
 
-Rollback is a configuration change: stop this process, point the producer back at the incumbent queue, and replay only messages that have not been acknowledged. The domain function remains usable in either worker.
+Rollback is just config: stop this process, point producer back to incumbent queue, replay only unacked messages. The domain function works in both workers.
 
 ## Files
 
-`queue_worker.py` contains the typed models and workflow. `infrai.py` is the small HTTP boundary; every request uses an explicit method and the documented queue paths.
+`queue_worker.py` holds the typed models and workflow. `infrai.py` is the thin HTTP boundary; each request sets an explicit method and hits the documented queue paths.
 
 ## License
 
@@ -45,7 +45,7 @@ MIT
 
 ## Setting up for real use: Ecommerce Rate Limited Worker Worker Pool Ecommerce Python M
 
-Quick start is above. For a real deployment you'll also need: The details below apply to Ecommerce Rate Limited Worker Worker Pool Ecommerce Python M.
+Quick start is above. For production you need a few more things. The notes below target Ecommerce Rate Limited Worker Worker Pool Ecommerce Python M.
 
 **Account & key**
 
